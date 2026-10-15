@@ -1,114 +1,75 @@
-#!/bin/bash
-# Launch the DIPE inference backends (transformers, OpenAI-compatible FastAPI).
-# Default: one instance on GPU 6, port 8106. GPUs 4-5 are used by the judge.
-# Uses the `eval` conda env shared by the evaluation stack.
-#
-# Override the GPU/port layout with INSTANCE_CONFIG (see load_balancer note):
-#   INSTANCE_CONFIG='"6:8106"' bash scripts/eval/infer_backend.sh
-#
-# Pre-req: scripts/eval/distribution_config.env (LOCAL_IP, EVAL_MODEL_PATH, ...)
+#!/usr/bin/env bash
+set -euo pipefail
 
-CONFIG_PATH="scripts/eval/distribution_config.env"
-source $CONFIG_PATH
-MODEL_PATH=${EVAL_MODEL_PATH_OVERRIDE:-$EVAL_MODEL_PATH}
-POSITION_EMBEDDING=${POSITION_EMBEDDING:-mrope}
-CROSS_MODAL_POSITION=${CROSS_MODAL_POSITION:-dipe}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+source "${SCRIPT_DIR}/distribution_config.env"
+cd "${PROJECT_ROOT}"
 
-LOCAL_IP=${LOCAL_IP:-localhost}
-SERVICE_HOST=${SERVICE_HOST:-0.0.0.0}
-LOG_DIR="${BACKEND_LOG_DIR:-eval_output/logs/transformers_instances}"
-mkdir -p "${LOG_DIR}"
-
-# A run-local PID manifest lets concurrent evaluation orchestrators clean up
-# only the workers they own.
-BACKEND_PID_FILE="${BACKEND_PID_FILE:-}"
-if [[ -n "${BACKEND_PID_FILE}" ]]; then
-    mkdir -p "$(dirname "${BACKEND_PID_FILE}")"
-    : > "${BACKEND_PID_FILE}"
-fi
-
-# Explicit eval environment Python. The backend defaults to PyTorch SDPA because
-# this environment intentionally does not require a separately compiled
-# flash-attn wheel.
-EVAL_PYTHON="${EVAL_PYTHON:-/opt/conda/envs/eval/bin/python}"
+INSTANCE_CONFIG="${INSTANCE_CONFIG:-${BACKEND_INSTANCES}}"
+MODEL_PATH="${EVAL_MODEL_PATH_OVERRIDE:-${EVAL_MODEL_PATH}}"
+POSITION_EMBEDDING="${POSITION_EMBEDDING:-mrope}"
+CROSS_MODAL_POSITION="${CROSS_MODAL_POSITION:-girf}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
-GIRF_RESOLUTION_GATE="${GIRF_RESOLUTION_GATE:-0}"
-GIRF_ORDINAL_ENABLED="${GIRF_ORDINAL_ENABLED:-}"
-GIRF_PI_MASK_ENABLED="${GIRF_PI_MASK_ENABLED:-}"
-GIRF_PI_MASK_COMPONENTS="${GIRF_PI_MASK_COMPONENTS:-}"
-GIRF_SOFT_VV_PENALTY="${GIRF_SOFT_VV_PENALTY:-}"
-DISABLE_KV_CACHE="${DISABLE_KV_CACHE:-0}"
+BACKEND_LOG_DIR="${BACKEND_LOG_DIR:-${PROJECT_ROOT}/eval_output/logs/backends}"
+BACKEND_PID_FILE="${BACKEND_PID_FILE:-${BACKEND_LOG_DIR}/backend_pids.txt}"
 
-GIRF_ARGS=()
-if [[ "${GIRF_RESOLUTION_GATE}" == "1" ]]; then
-    GIRF_ARGS+=(--girf-resolution-gate)
+if [[ -z "${MODEL_PATH}" || ! -f "${MODEL_PATH}/config.json" ]]; then
+  echo "A checkpoint directory containing config.json is required; got '${MODEL_PATH}'." >&2
+  exit 2
 fi
-if [[ "${GIRF_ORDINAL_ENABLED}" == "1" ]]; then
-    GIRF_ARGS+=(--girf-ordinal-enabled)
-elif [[ "${GIRF_ORDINAL_ENABLED}" == "0" ]]; then
-    GIRF_ARGS+=(--no-girf-ordinal-enabled)
-fi
-if [[ "${GIRF_PI_MASK_ENABLED}" == "1" ]]; then
-    GIRF_ARGS+=(--girf-pi-mask-enabled)
-elif [[ "${GIRF_PI_MASK_ENABLED}" == "0" ]]; then
-    GIRF_ARGS+=(--no-girf-pi-mask-enabled)
-fi
-if [[ -n "${GIRF_PI_MASK_COMPONENTS}" ]]; then
-    GIRF_ARGS+=(--girf-pi-mask-components "${GIRF_PI_MASK_COMPONENTS}")
-fi
-if [[ -n "${GIRF_SOFT_VV_PENALTY}" ]]; then
-    GIRF_ARGS+=(--girf-soft-vv-penalty "${GIRF_SOFT_VV_PENALTY}")
-fi
-if [[ "${DISABLE_KV_CACHE}" == "1" ]]; then
-    GIRF_ARGS+=(--disable-kv-cache)
+if [[ ! -f "${PROJECT_ROOT}/qwenvl/eval/transformers_backend.py" ]]; then
+  echo "Missing GIRF backend: ${PROJECT_ROOT}/qwenvl/eval/transformers_backend.py" >&2
+  exit 2
 fi
 
-# Default: GPU 6, port 8106 (avoid GPUs 4-5 reserved for the judge).
-if [[ -z "${INSTANCE_CONFIG:-}" ]]; then
-    INSTANCE_CONFIG='"6:8106"'
-fi
+mkdir -p "${BACKEND_LOG_DIR}" "$(dirname "${BACKEND_PID_FILE}")"
+temporary_pid_file="${BACKEND_PID_FILE}.tmp.$$"
+: > "${temporary_pid_file}"
+trap 'rm -f "${temporary_pid_file}"' EXIT
 
-echo "============================================"
-echo "Starting DIPE backend instances (env=eval)..."
-echo "Model: ${MODEL_PATH}"
-echo "Local IP: ${LOCAL_IP}"
-echo "Bind host: ${SERVICE_HOST}"
-echo "Instances: ${INSTANCE_CONFIG}"
-echo "Position embedding: ${POSITION_EMBEDDING}"
-echo "Cross-modal position: ${CROSS_MODAL_POSITION}"
-echo "GIRF resolution gate: ${GIRF_RESOLUTION_GATE}"
-echo "GIRF ordinal: ${GIRF_ORDINAL_ENABLED:-checkpoint-default}"
-echo "GIRF PI mask: ${GIRF_PI_MASK_ENABLED:-checkpoint-default}"
-echo "GIRF PI components: ${GIRF_PI_MASK_COMPONENTS:-checkpoint-default}"
-echo "GIRF Soft-VV penalty: ${GIRF_SOFT_VV_PENALTY:-checkpoint-default}"
-echo "Disable KV cache: ${DISABLE_KV_CACHE}"
-echo "============================================"
+for instance in ${INSTANCE_CONFIG}; do
+  gpu="${instance%%:*}"
+  port="${instance#*:}"
+  if [[ "${gpu}" == "${port}" || ! "${gpu}" =~ ^[0-9]+$ || ! "${port}" =~ ^[0-9]+$ ]]; then
+    echo "Invalid backend instance '${instance}'; expected GPU:PORT." >&2
+    exit 2
+  fi
 
-i=0
-for CONFIG in ${INSTANCE_CONFIG}; do
-    CONFIG=${CONFIG//\"/}
-    GPU_ID=$(echo $CONFIG | cut -d':' -f1)
-    PORT=$(echo $CONFIG | cut -d':' -f2)
+  extra_args=()
+  if [[ "${GIRF_RESOLUTION_GATE:-0}" == 1 ]]; then
+    extra_args+=(--girf-resolution-gate --disable-kv-cache)
+    ATTN_IMPLEMENTATION=eager
+  fi
+  case "${GIRF_ORDINAL_ENABLED:-}" in
+    1|true|True) extra_args+=(--girf-ordinal-enabled) ;;
+    0|false|False) extra_args+=(--no-girf-ordinal-enabled) ;;
+    "") ;;
+    *) echo "GIRF_ORDINAL_ENABLED must be true or false." >&2; exit 2 ;;
+  esac
+  case "${GIRF_PI_MASK_ENABLED:-}" in
+    1|true|True) extra_args+=(--girf-pi-mask-enabled) ;;
+    0|false|False) extra_args+=(--no-girf-pi-mask-enabled) ;;
+    "") ;;
+    *) echo "GIRF_PI_MASK_ENABLED must be true or false." >&2; exit 2 ;;
+  esac
+  [[ -n "${GIRF_PI_MASK_COMPONENTS:-}" ]] && \
+    extra_args+=(--girf-pi-mask-components "${GIRF_PI_MASK_COMPONENTS}")
+  [[ -n "${GIRF_SOFT_VV_PENALTY:-}" ]] && \
+    extra_args+=(--girf-soft-vv-penalty "${GIRF_SOFT_VV_PENALTY}")
 
-    echo "Starting instance $i on GPU $GPU_ID, port $PORT..."
-
-    CUDA_VISIBLE_DEVICES="${GPU_ID}" "${EVAL_PYTHON}" qwenvl/eval/transformers_backend.py \
-        --port "${PORT}" \
-        --host "${SERVICE_HOST}" \
-        --model-path "${MODEL_PATH}" \
-        --position-embedding "${POSITION_EMBEDDING}" \
-        --cross-modal-position "${CROSS_MODAL_POSITION}" \
-        --attn-implementation "${ATTN_IMPLEMENTATION}" \
-        "${GIRF_ARGS[@]}" \
-        > "${LOG_DIR}/instance_${i}_gpu${GPU_ID}_port${PORT}.log" 2>&1 &
-
-    worker_pid=$!
-    if [[ -n "${BACKEND_PID_FILE}" ]]; then
-        printf '%s\n' "${worker_pid}" >> "${BACKEND_PID_FILE}"
-    fi
-    echo "Instance $i started (pid ${worker_pid})."
-    i=$((i + 1))
+  CUDA_VISIBLE_DEVICES="${gpu}" "${MODEL_PYTHON}" \
+    qwenvl/eval/transformers_backend.py \
+    --model-path "${MODEL_PATH}" \
+    --position-embedding "${POSITION_EMBEDDING}" \
+    --cross-modal-position "${CROSS_MODAL_POSITION}" \
+    --attn-implementation "${ATTN_IMPLEMENTATION}" \
+    --host "${SERVICE_HOST}" --port "${port}" \
+    "${extra_args[@]}" \
+    > "${BACKEND_LOG_DIR}/backend_gpu${gpu}_port${port}.log" 2>&1 &
+  printf '%s\n' "$!" >> "${temporary_pid_file}"
 done
 
-echo "All backend instances launched. Logs: ${LOG_DIR}/instance_*.log"
-echo "Wait ~1-2 min for model load, then check the configured backend port(s)."
+mv "${temporary_pid_file}" "${BACKEND_PID_FILE}"
+trap - EXIT
+echo "Started $(wc -l < "${BACKEND_PID_FILE}") backend worker(s); PID file: ${BACKEND_PID_FILE}"

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qwenvl-girf"
+version = "0.1.0"
+description = "GIRF multimodal positional-relation research implementation"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+include = ["qwenvl", "qwenvl.*", "experiments", "experiments.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

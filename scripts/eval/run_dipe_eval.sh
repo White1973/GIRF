@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# DIPE end-to-end evaluation orchestrator.
+# GIRF/position-method end-to-end evaluation orchestrator.
 #
 # Assumes the judge is already running via `start_judge.sh` (GPU 4-5, judge
 # balancer on port 7772). This script then:
@@ -27,12 +27,16 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DIPE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-cd "${DIPE_ROOT}"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+cd "${PROJECT_ROOT}"
 
-CONFIG_PATH="scripts/eval/distribution_config.env"
+CONFIG_PATH="${SCRIPT_DIR}/distribution_config.env"
 CALLER_SAVE_NAME="${SAVE_NAME:-}"
-source $CONFIG_PATH
+if [[ ! -f "${CONFIG_PATH}" ]]; then
+    echo "Missing evaluation configuration: ${CONFIG_PATH}" >&2
+    exit 2
+fi
+source "${CONFIG_PATH}"
 if [[ -n "${CALLER_SAVE_NAME}" ]]; then
     SAVE_NAME="${CALLER_SAVE_NAME}"
 fi
@@ -291,8 +295,12 @@ cleanup() {
 # Keep evaluation dependencies isolated from the custom DIPE model runtime.
 # The backend process is launched by infer_backend.sh with the `dipe` env;
 # VLMEvalKit and the lightweight HTTP balancer run in the `eval` env.
-EVAL_PYTHON="${EVAL_PYTHON:-/opt/conda/envs/eval/bin/python}"
-VLMEVALKIT_DIR="${VLMEVALKIT_DIR:-${DIPE_ROOT}/VLMEvalKit}"
+EVAL_PYTHON="${EVAL_PYTHON:-$(command -v python3 || command -v python)}"
+VLMEVALKIT_DIR="${VLMEVALKIT_DIR:-${PROJECT_ROOT}/VLMEvalKit}"
+if [[ ! -f "${VLMEVALKIT_DIR}/run.py" ]]; then
+    echo "Missing VLMEvalKit entry point: ${VLMEVALKIT_DIR}/run.py" >&2
+    exit 2
+fi
 
 # --- stop mode ----------------------------------------------------------------
 if [[ ${STOP_ONLY} -eq 1 ]]; then
@@ -321,7 +329,7 @@ if ! flock -n "${RUN_LOCK_FD}"; then
 fi
 
 echo "###############################################"
-echo "# DIPE evaluation orchestrator"
+echo "# GIRF/position evaluation orchestrator"
 echo "###############################################"
 echo "VLM under test : ${MODEL_NAME}  (DIPE_API_BASE -> :${BACKEND_BALANCER_PORT})"
 echo "Judge          : ${JUDGE_NAME}  (judge base url -> :${JUDGE_BALANCER_PORT})"
@@ -645,6 +653,7 @@ for DATA in ${DATA_LIST}; do
 
     eval_command=(
         env "DIPE_MAX_TOKENS=${current_max_tokens}"
+        "PYTHONPATH=${VLMEVALKIT_DIR}:${PROJECT_ROOT}:${PYTHONPATH:-}"
         "${EVAL_PYTHON}" "${VLMEVALKIT_DIR}/run.py"
         --data "${DATA}"
         --model "${MODEL_NAME}"

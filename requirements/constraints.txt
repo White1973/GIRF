@@ -1,0 +1,8 @@
+accelerate==1.14.0
+einops==0.8.2
+numpy==2.2.6
+qwen-vl-utils==0.0.14
+safetensors==0.8.0
+torch==2.8.0
+torchvision==0.23.0
+transformers==4.57.3

@@ -1,160 +1,414 @@
-![LOGO](http://opencompass.openxlab.space/utils/MMLB.jpg)
+# GIRF-Core：Gauge-Invariant Relation Field
 
-<b>A Toolkit for Evaluating Large Vision-Language Models. </b>
+## 1. 核心思想
 
-[![][github-contributors-shield]][github-contributors-link] • [![][github-forks-shield]][github-forks-link] • [![][github-stars-shield]][github-stars-link] • [![][github-issues-shield]][github-issues-link] • [![][github-license-shield]][github-license-link]
+GIRF（Gauge-Invariant Relation Field，规范不变关系场）从一个基本问题出发：
 
-English | [简体中文](/docs/zh-CN/README_zh-CN.md) | [日本語](/docs/ja/README_ja.md)
+> 文本序号与视觉时空坐标属于不同的坐标系，二者不应在跨模态 attention 中被直接相减。
 
-<a href="https://rank.opencompass.org.cn/leaderboard-multimodal">🏆 OC Learderboard </a> •
-<a href="#%EF%B8%8F-quickstart">🏗️Quickstart </a> •
-<a href="#-datasets-models-and-evaluation-results">📊Datasets & Models </a> •
-<a href="#%EF%B8%8F-development-guide">🛠️Development </a>
+原始多模态 RoPE 对 Query $i$ 和 Key $j$ 使用：
 
-<a href="https://huggingface.co/spaces/opencompass/open_vlm_leaderboard">🤗 HF Leaderboard</a> •
-<a href="https://huggingface.co/datasets/VLMEval/OpenVLMRecords">🤗 Evaluation Records</a> •
-<a href="https://huggingface.co/spaces/opencompass/openvlm_video_leaderboard">🤗 HF Video Leaderboard</a> •
+$$
+A_{ij}=q_i^\top R(p_i-p_j)k_j.
+$$
 
-<a href="https://discord.gg/evDT4GZmxN">🔊 Discord</a> •
-<a href="https://www.arxiv.org/abs/2407.11691">📝 Report</a> •
-<a href="#-the-goal-of-vlmevalkit">🎯Goal </a> •
-<a href="#%EF%B8%8F-citation">🖊️Citation </a>
-</div>
+对于文本—视觉 token pair，这隐含使用：
 
-**VLMEvalKit** (the python package name is **vlmeval**) is an **open-source evaluation toolkit** of **large vision-language models (LVLMs)**. It enables **one-command evaluation** of LVLMs on various benchmarks, without the heavy workload of data preparation under multiple repositories. In VLMEvalKit, we adopt **generation-based evaluation** for all LVLMs, and provide the evaluation results obtained with both **exact matching** and **LLM-based answer extraction**.
+$$
+p_i^T-p_j^V.
+$$
 
-## Recent Codebase Changes
-- **[2025-09-12]** **Major Update: Improved Handling for Models with Thinking Mode**
+但 $p_i^T$ 是文本序列位置，$p_j^V$ 是视觉 $t/h/w$ 位置，它们没有天然共享的原点、尺度和单位。插入无关文本后，即使图像、问题和答案都没有变化，文本绝对位置仍会移动，从而产生没有语义依据的跨模态相位变化。
 
-    A new feature in [PR 1229](https://github.com/open-compass/VLMEvalKit/pull/1175) that improves support for models with thinking mode. VLMEvalKit now allows for the use of a custom `split_thinking` function. **We strongly recommend this for models with thinking mode to ensure the accuracy of evaluation**.  To use this new functionality, please enable the Environment Variable: `SPLIT_THINK=True`. By default, the function will parse content within `<think>...</think>` tags and store it in the `thinking` key of the output. For more advanced customization, you can also create a `split_think` function for model. Please see the InternVL implementation for an example.
-- **[2025-09-12]** **Major Update: Improved Handling for Long Response(More than 16k/32k)**
+GIRF 不为两个模态强行构造统一绝对坐标，而是使用两个模态各自内部的关系量，直接定义跨模态关系。
 
-    A new feature in [PR 1229](https://github.com/open-compass/VLMEvalKit/pull/1175) that improves support for models with long response outputs. VLMEvalKit can now save prediction files in TSV format. **Since individual cells in an `.xlsx` file are limited to 32,767 characters, we strongly recommend using this feature for models that generate long responses (e.g., exceeding 16k or 32k tokens) to prevent data truncation.** To use this new functionality, please enable the Environment Variable: `PRED_FORMAT=tsv`.
-- **[2025-08-04]** In [PR 1175](https://github.com/open-compass/VLMEvalKit/pull/1175), we refine the `can_infer_option` and `can_infer_text`, which increasingly route the evaluation to LLM choice extractors and empirically leads to slight performance improvement for MCQ benchmarks.
+## 2. Modality-pair positional attention
 
-## 🆕 News
+GIRF 先判断 Query 和 Key 的模态，再选择对应的位置规则：
 
-- **[2026-04-08]** Supported [**Video-MME-v2**](https://github.com/MME-Benchmarks/Video-MME-v2). Video-MME-v2 is an authoritative benchmark towards the next stage in video understanding evaluation. 🔥🔥🔥
-- **[2025-07-07]** Supported [**SeePhys**](https://seephys.github.io/), which is a ​full spectrum multimodal benchmark for evaluating physics reasoning across different knowledge levels. thanks to [**Quinn777**](https://github.com/Quinn777) 🔥🔥🔥
-- **[2025-07-02]** Supported [**OvisU1**](https://huggingface.co/AIDC-AI/Ovis-U1-3B), thanks to [**liyang-7**](https://github.com/liyang-7) 🔥🔥🔥
-- **[2025-06-16]** Supported [**PhyX**](https://phyx-bench.github.io/), a benchmark aiming to assess capacity for physics-grounded reasoning in visual scenarios. 🔥🔥🔥
-- **[2025-05-24]** To facilitate faster evaluations for large-scale or thinking models, **VLMEvalKit supports multi-node distributed inference** using **LMDeploy**  (supports *InternVL Series, QwenVL Series, LLaMa4*) or **VLLM**(supports *QwenVL Series, LLaMa4*). You can activate this feature by adding the ```use_lmdeploy``` or ```use_vllm``` flag to your custom model configuration in [config.py](vlmeval/config.py) . Leverage these tools to significantly speed up your evaluation workflows 🔥🔥🔥
-- **[2025-05-24]** Supported Models: **InternVL3 Series, Gemini-2.5-Pro, Kimi-VL, LLaMA4, NVILA, Qwen2.5-Omni, Phi4, SmolVLM2, Grok, SAIL-VL-1.5, WeThink-Qwen2.5VL-7B, Bailingmm, VLM-R1, Taichu-VLR**. Supported Benchmarks: **HLE-Bench, MMVP, MM-AlignBench, Creation-MMBench, MM-IFEval, OmniDocBench, OCR-Reasoning, EMMA, ChaXiv，MedXpertQA, Physics, MSEarthMCQ, MicroBench, MMSci, VGRP-Bench, wildDoc, TDBench, VisuLogic, CVBench, LEGO-Puzzles, Video-MMLU, QBench-Video, MME-CoT, VLM2Bench, VMCBench, MOAT, Spatial457 Benchmark**. Please refer to [**VLMEvalKit Features**](https://aicarrier.feishu.cn/wiki/Qp7wwSzQ9iK1Y6kNUJVcr6zTnPe?table=tblsdEpLieDoCxtb) for more details. Thanks to all contributors 🔥🔥🔥
-- **[2025-02-20]** Supported Models: **InternVL2.5 Series, Qwen2.5VL Series, QVQ-72B, Doubao-VL, Janus-Pro-7B, MiniCPM-o-2.6, InternVL2-MPO, LLaVA-CoT, Hunyuan-Standard-Vision, Ovis2, Valley, SAIL-VL, Ross, Long-VITA, EMU3, SmolVLM**. Supported Benchmarks: **MMMU-Pro, WeMath, 3DSRBench, LogicVista, VL-RewardBench, CC-OCR, CG-Bench, CMMMU, WorldSense**. Thanks to all contributors 🔥🔥🔥
-- **[2024-12-11]** Supported [**NaturalBench**](https://huggingface.co/datasets/BaiqiL/NaturalBench), a vision-centric VQA benchmark (NeurIPS'24) that challenges vision-language models with simple questions about natural imagery.
-- **[2024-12-02]** Supported [**VisOnlyQA**](https://github.com/psunlpgroup/VisOnlyQA/), a benchmark for evaluating the visual perception capabilities 🔥🔥🔥
-- **[2024-11-26]** Supported [**Ovis1.6-Gemma2-27B**](https://huggingface.co/AIDC-AI/Ovis1.6-Gemma2-27B), thanks to [**runninglsy**](https://github.com/runninglsy) 🔥🔥🔥
-- **[2024-11-25]** Create a new flag `VLMEVALKIT_USE_MODELSCOPE`. By setting this environment variable, you can download the video benchmarks supported from [**modelscope**](https://www.modelscope.cn) 🔥🔥🔥
+$$
+A_{ij}=
+\begin{cases}
+q_i^\top R_T(p_i^T-p_j^T)k_j, & TT,\\[2mm]
+q_i^\top R_V(p_i^V-p_j^V)k_j, & VV,\\[2mm]
+q_i^\top R_C(\theta_{ij}^{TV})k_j, & TV,\\[2mm]
+q_i^\top R_C(\theta_{ij}^{VT})k_j, & VT.
+\end{cases}
+$$
 
-## 🏗️ QuickStart
+其中：
 
-See [[QuickStart](/docs/en/Quickstart.md) | [快速开始](/docs/zh-CN/Quickstart.md)] for a quick start guide.
+- 文本—文本保留文本相对距离；
+- 视觉—视觉保留视觉内部 $t/h/w$ 相对结构；
+- 文本—视觉不再计算文本序号减视觉坐标；
+- 视觉—文本使用相反方向的同一跨模态关系。
 
-## 📊 Datasets, Models, and Evaluation Results
+## 3. 模态内部规范坐标
 
-### Evaluation Results
+### 3.1 文本内部角色
 
-**The performance numbers on our official multi-modal leaderboards can be downloaded from here!**
+文本 token $i$ 在当前问题或答案段中的规范位置为：
 
-[**OpenVLM Leaderboard**](https://huggingface.co/spaces/opencompass/open_vlm_leaderboard): [**Download All DETAILED Results**](http://opencompass.openxlab.space/assets/OpenVLM.json).
+$$
+\tau_i=
+2\frac{p_i^T-a_T}{\max(L_T-1,1)}-1,
+$$
 
-Check **Supported Benchmarks** Tab in [**VLMEvalKit Features**](https://aicarrier.feishu.cn/wiki/Qp7wwSzQ9iK1Y6kNUJVcr6zTnPe?table=tblsdEpLieDoCxtb) to view all supported image & video benchmarks (70+).
+其中 $a_T$ 是当前文本段起点，$L_T$ 是该文本段长度。
 
-Check **Supported LMMs** Tab in [**VLMEvalKit Features**](https://aicarrier.feishu.cn/wiki/Qp7wwSzQ9iK1Y6kNUJVcr6zTnPe?table=tblsdEpLieDoCxtb) to view all supported LMMs, including commercial APIs, open-source models, and more (200+).
+因此，在当前文本段之前插入长度为 $\Delta_T$ 的 distractor 时：
 
-**Transformers Version Recommendation:**
+$$
+p_i^T\rightarrow p_i^T+\Delta_T,
+\qquad
+a_T\rightarrow a_T+\Delta_T,
+$$
 
-Note that some VLMs may not be able to run under certain transformer versions, we recommend the following settings to evaluate each VLM:
+但：
 
-- **Please use** `transformers==4.33.0` **for**: `Qwen series`, `Monkey series`, `InternLM-XComposer Series`, `mPLUG-Owl2`, `OpenFlamingo v2`, `IDEFICS series`, `VisualGLM`, `MMAlaya`, `ShareCaptioner`, `MiniGPT-4 series`, `InstructBLIP series`, `PandaGPT`, `VXVERSE`.
-- **Please use** `transformers==4.36.2` **for**: `Moondream1`.
-- **Please use** `transformers==4.37.0` **for**: `LLaVA series`, `ShareGPT4V series`, `TransCore-M`, `LLaVA (XTuner)`, `CogVLM Series`, `EMU2 Series`, `Yi-VL Series`, `MiniCPM-[V1/V2]`, `OmniLMM-12B`, `DeepSeek-VL series`, `InternVL series`, `Cambrian Series`, `VILA Series`, `Llama-3-MixSenseV1_1`, `Parrot-7B`, `PLLaVA Series`.
-- **Please use** `transformers==4.40.0` **for**: `IDEFICS2`, `Bunny-Llama3`, `MiniCPM-Llama3-V2.5`, `360VL-70B`, `Phi-3-Vision`, `WeMM`.
-- **Please use** `transformers==4.42.0` **for**: `AKI`.
-- **Please use** `transformers==4.44.0` **for**: `Moondream2`, `H2OVL series`.
-- **Please use** `transformers==4.45.0` **for**: `Aria`.
-- **Please use** `transformers==4.48.0` (or `4.46.0`) **for**: `LLaVA-Next series` (e.g., `llava-hf/llava-v1.6-vicuna-7b-hf`).
-- **Please use** `transformers==latest` **for**: `PaliGemma-3B`, `Chameleon series`, `Video-LLaVA-7B-HF`, `Ovis series`, `Mantis series`, `MiniCPM-V2.6`, `OmChat-v2.0-13B-sinlge-beta`, `Idefics-3`, `GLM-4v-9B`, `VideoChat2-HD`, `RBDash_72b`, `Llama-3.2 series`, `Kosmos series`.
-- **Please use** `transformers==4.50.3` (or `4.46.1` or `4.51` or `4.53`) **for**: `Molmo series`.
-- **Please use** `transformers>=5.2.0` **for**: `Qwen3.5 series`.
+$$
+\tau_i\rightarrow\tau_i.
+$$
 
-**Torchvision Version Recommendation:**
+### 3.2 视觉内部位置
 
-Note that some VLMs may not be able to run under certain torchvision versions, we recommend the following settings to evaluate each VLM:
+视觉 token $j$ 在当前图像或视频中的规范坐标为：
 
-- **Please use** `torchvision>=0.16` **for**: `Moondream series` and `Aria`
+$$
+x_j=2\frac{w_j-w_{\min}}{\max(w_{\max}-w_{\min},1)}-1,
+$$
 
-**Flash-attn Version Recommendation:**
+$$
+y_j=2\frac{h_j-h_{\min}}{\max(h_{\max}-h_{\min},1)}-1,
+$$
 
-Note that some VLMs may not be able to run under certain flash-attention versions, we recommend the following settings to evaluate each VLM:
+$$
+z_j=2\frac{t_j-t_{\min}}{\max(t_{\max}-t_{\min},1)}-1.
+$$
 
-- **Please use** `pip install flash-attn --no-build-isolation` **for**: `Aria`
+这些坐标均位于 $[-1,1]$，只描述视觉 token 在当前视觉实体内部的位置。视觉坐标整体平移不会改变 $x_j,y_j,z_j$。
 
-```python
-# Demo
-from vlmeval.config import supported_VLM
-model = supported_VLM['idefics_9b_instruct']()
-# Forward Single Image
-ret = model.generate(['assets/apple.jpg', 'What is in this image?'])
-print(ret)  # The image features a red apple with a leaf on it.
-# Forward Multiple Images
-ret = model.generate(['assets/apple.jpg', 'assets/apple.jpg', 'How many apples are there in the provided images? '])
-print(ret)  # There are two apples in the provided images.
-```
+### 3.3 视觉实体关系
 
-## 🛠️ Development Guide
+多图输入中，图像身份与图像内部坐标分开表示。定义：
 
-To develop custom benchmarks, VLMs, or simply contribute other codes to **VLMEvalKit**, please refer to [[Development_Guide](/docs/en/Development.md) | [开发指南](/docs/zh-CN/Development.md)].
+$$
+\epsilon_{ij}
+=\eta(e_i^{\mathrm{ref}})-\eta(e_j),
+\qquad
+\eta(e)=\frac{2}{\pi}\arctan(e),
+$$
 
-**Call for contributions**
+其中 $e_j$ 是视觉 token 所属实体，$e_i^{\mathrm{ref}}$ 是当前文本段通过输入结构所引用的视觉实体，$\eta$ 是固定、有界且保持实体次序差异的势函数。
 
-To promote the contribution from the community and share the corresponding credit (in the next report update):
+当：
 
-- All Contributions will be acknowledged in the report.
-- Contributors with 3 or more major contributions (implementing an MLLM, benchmark, or major feature) can join the author list of [VLMEvalKit Technical Report](https://www.arxiv.org/abs/2407.11691) on ArXiv. Eligible contributors can create an issue or dm kennyutc in [VLMEvalKit Discord Channel](https://discord.com/invite/evDT4GZmxN).
+$$
+\epsilon_{ij}=0,
+$$
 
-Here is a [contributor list](/docs/en/Contributors.md) we curated based on the records.
+视觉 token 属于当前文本段直接引用的图像；非零值表示它来自其他视觉实体。
 
-## 🎯 The Goal of VLMEvalKit
+该关系由图像占位符和输入结构确定，不需要模型预测。
 
-**The codebase is designed to:**
+## 4. Gauge-Invariant Relation Field
 
-1. Provide an **easy-to-use**, **opensource evaluation toolkit** to make it convenient for researchers & developers to evaluate existing LVLMs and make evaluation results **easy to reproduce**.
-2. Make it easy for VLM developers to evaluate their own models. To evaluate the VLM on multiple supported benchmarks, one just need to **implement a single `generate_inner()` function**, all other workloads (data downloading, data preprocessing, prediction inference, metric calculation) are handled by the codebase.
+GIRF 的跨模态关系向量为：
 
-**The codebase is not designed to:**
+$$
+\boxed{
+r_{ij}^{TV}
+=
+\begin{bmatrix}
+\tau_i,&
+\epsilon_{ij},&
+z_j,&
+y_j,&
+x_j
+\end{bmatrix}
+}.
+$$
 
-1. Reproduce the exact accuracy number reported in the original papers of all **3rd party benchmarks**. The reason can be two-fold:
-   1. VLMEvalKit uses **generation-based evaluation** for all VLMs (and optionally with **LLM-based answer extraction**). Meanwhile, some benchmarks may use different approaches (SEEDBench uses PPL-based evaluation, *eg.*). For those benchmarks, we compare both scores in the corresponding result. We encourage developers to support other evaluation paradigms in the codebase.
-   2. By default, we use the same prompt template for all VLMs to evaluate on a benchmark. Meanwhile, **some VLMs may have their specific prompt templates** (some may not covered by the codebase at this time). We encourage VLM developers to implement their own prompt template in VLMEvalKit, if that is not covered currently. That will help to improve the reproducibility.
+它分别表示：
 
-## 🖊️ Citation
+1. 文本 token 在当前文本段中的角色；
+2. 文本所引用实体与视觉 token 所属实体的关系；
+3. 视觉 token 的内部时间位置；
+4. 视觉 token 的内部纵向位置；
+5. 视觉 token 的内部横向位置。
 
-If you find this work helpful, please consider to **star🌟** this repo. Thanks for your support!
+该关系不包含：
 
-[![Stargazers repo roster for @open-compass/VLMEvalKit](https://reporoster.com/stars/open-compass/VLMEvalKit)](https://github.com/open-compass/VLMEvalKit/stargazers)
+- 全局文本 token index；
+- 图像在统一序列中的绝对 offset；
+- 未中心化的视觉坐标；
+- 模型 hidden state；
+- MLP、Adapter 或逐层逐头 gate。
 
-If you use VLMEvalKit in your research or wish to refer to published OpenSource evaluation results, please use the following BibTeX entry and the BibTex entry corresponding to the specific VLM / benchmark you used.
+## 5. Gauge invariance
 
-```bib
-@inproceedings{duan2024vlmevalkit,
-  title={Vlmevalkit: An open-source toolkit for evaluating large multi-modality models},
-  author={Duan, Haodong and Yang, Junming and Qiao, Yuxuan and Fang, Xinyu and Chen, Lin and Liu, Yuan and Dong, Xiaoyi and Zang, Yuhang and Zhang, Pan and Wang, Jiaqi and others},
-  booktitle={Proceedings of the 32nd ACM International Conference on Multimedia},
-  pages={11198--11201},
-  year={2024}
+如果文本和视觉坐标系分别进行独立原点平移：
+
+$$
+p^T\rightarrow p^T+\Delta_T,
+\qquad
+p^V\rightarrow p^V+\Delta_V,
+$$
+
+模态内部规范坐标保持不变，因此：
+
+$$
+\boxed{
+r_{ij}\left(p^T+\Delta_T,p^V+\Delta_V\right)
+=r_{ij}\left(p^T,p^V\right)
+}.
+$$
+
+对于相同图像和问题，在二者之间插入不同长度的无关文本时：
+
+$$
+\boxed{
+r_{ij}^{0K}=r_{ij}^{1K}=r_{ij}^{4K}=r_{ij}^{8K}
+}.
+$$
+
+这保证跨模态位置关系不会因为上下文长度或任意坐标原点而漂移。
+
+## 6. Structural discriminability
+
+Gauge invariance 只要求关系不受任意坐标变换影响，但 GIRF 还要求真实的模态内部结构保持可区分。
+
+对于同一文本 Query，如果两个视觉 token 位于不同的内部位置：
+
+$$
+(z_{j_1},y_{j_1},x_{j_1})
+\neq
+(z_{j_2},y_{j_2},x_{j_2}),
+$$
+
+则它们的跨模态关系也不同：
+
+$$
+\boxed{
+r_{ij_1}^{TV}\neq r_{ij_2}^{TV}
+}.
+$$
+
+对于不同视觉实体中的 token，只要其实体关系不同：
+
+$$
+\epsilon_{ij_1}\neq\epsilon_{ij_2},
+$$
+
+也有：
+
+$$
+r_{ij_1}^{TV}\neq r_{ij_2}^{TV}.
+$$
+
+因此 GIRF 的核心不是简单地消除跨模态位置，而是同时满足：
+
+$$
+\boxed{
+\text{Gauge invariance}
++
+\text{structural discriminability}
+}.
+$$
+
+## 7. 确定性旋转通道分配
+
+GIRF 不使用含义不明确的可学习投影矩阵。它将 rotary channel 确定性地划分为：
+
+$$
+\mathcal K_T,quad
+\mathcal K_E,quad
+\mathcal K_Z,quad
+\mathcal K_Y,quad
+\mathcal K_X,
+$$
+
+分别承载文本角色、视觉实体、视觉时间、视觉高度和视觉宽度。
+
+定义轴分配函数：
+
+$$
+a(k)\in\{T,E,Z,Y,X\}.
+$$
+
+第 $k$ 个旋转通道的跨模态相位为：
+
+$$
+\boxed{
+\theta_{ij,k}^{TV}
+=\omega_k r_{ij,a(k)}^{TV}
+},
+$$
+
+其中 $\omega_k$ 是目标模型原有的 RoPE 频率。通道按照固定比例分配，不依赖模型层数、attention head 数量或任务训练。
+
+### 当前实现说明
+
+当前 LLaVA 数据 batch 没有显式传递问题段和答案段边界。为避免从全局 token index 推导 $\tau_i$、进而破坏 distractor 平移不变性，首版代码将文本角色势安全地设为中性值：
+
+$$
+\tau_i=0.
+$$
+
+实体、时间、高度和宽度关系已经启用。只有当数据管线能够提供可靠、模型无关的语义段边界时，才会启用非零 $\tau_i$；这不会改变 GIRF attention 接口或通道分配。
+
+反方向关系满足：
+
+$$
+\boxed{
+r_{ji}^{VT}=-r_{ij}^{TV}
+},
+$$
+
+因此：
+
+$$
+\theta_{ji,k}^{VT}=-\theta_{ij,k}^{TV}.
+$$
+
+## 8. 最终跨模态 attention
+
+文本—视觉 attention 为：
+
+$$
+\boxed{
+A_{ij}^{TV}
+=q_i^\top R_C(\theta_{ij}^{TV})k_j
+}.
+$$
+
+视觉—文本 attention 为：
+
+$$
+\boxed{
+A_{ji}^{VT}
+=q_j^\top R_C(-\theta_{ij}^{TV})k_i
+}.
+$$
+
+GIRF 只改变跨模态位置关系。Q/K/V 内容、attention mask、Key 数量和 softmax 归一化均保持不变。
+
+## 9. GIRF 与 DIPE 的本质差别
+
+### 9.1 DIPE：稳定的跨模态感知邻近
+
+DIPE 的主要目标是消除随着文本长度增长的跨模态距离惩罚。其跨模态关系可以抽象为一个锚定的稳定邻近关系：
+
+$$
+r_{ij}^{TV,\mathrm{DIPE}}\approx\rho_0.
+$$
+
+它主要回答：
+
+> 如何避免图像因为中间文本变长而在位置上远离问题？
+
+### 9.2 GIRF：类型化的跨模态关系几何
+
+GIRF 不使用单一跨模态邻近关系，而是定义：
+
+$$
+r_{ij}^{TV,\mathrm{GIRF}}
+=
+[\tau_i,\epsilon_{ij},z_j,y_j,x_j].
+$$
+
+它回答：
+
+> 当文本与视觉没有共享坐标系时，如何通过各自内部的不变量定义可区分的跨模态关系？
+
+二者的主要区别为：
+
+| 方面 | DIPE | GIRF |
+|---|---|---|
+| 主要问题 | 长文本导致跨模态距离惩罚 | 异构模态坐标不可直接比较 |
+| 跨模态关系 | 锚定的稳定感知邻近 | 类型化的内部关系向量 |
+| 文本长度稳定性 | 保持稳定 | 保持稳定 |
+| 视觉内部位置区分 | 取决于固定位置设计 | 显式保留 $z/y/x$ |
+| 多图实体关系 | 不是主要建模对象 | 显式保留 $\epsilon_{ij}$ |
+| 坐标原点不变性 | 主要针对模态间距离 | 对文本和视觉独立平移显式成立 |
+| 模型特定训练模块 | 不需要 | 不需要 |
+| 方法目标 | 距离不变 | 不变性与结构可区分性同时成立 |
+
+最核心的区别是：
+
+$$
+\boxed{
+\mathrm{DIPE}:
+\quad
+\text{跨模态关系}=\text{稳定邻近}
 }
-```
+$$
 
-<p align="right"><a href="#top">🔝Back to top</a></p>
+$$
+\boxed{
+\mathrm{GIRF}:
+\quad
+\text{跨模态关系}
+=\text{文本内部角色}
++\text{视觉实体关系}
++\text{视觉内部结构}
+}
+$$
 
-[github-contributors-link]: https://github.com/open-compass/VLMEvalKit/graphs/contributors
-[github-contributors-shield]: https://img.shields.io/github/contributors/open-compass/VLMEvalKit?color=c4f042&labelColor=black&style=flat-square
-[github-forks-link]: https://github.com/open-compass/VLMEvalKit/network/members
-[github-forks-shield]: https://img.shields.io/github/forks/open-compass/VLMEvalKit?color=8ae8ff&labelColor=black&style=flat-square
-[github-issues-link]: https://github.com/open-compass/VLMEvalKit/issues
-[github-issues-shield]: https://img.shields.io/github/issues/open-compass/VLMEvalKit?color=ff80eb&labelColor=black&style=flat-square
-[github-license-link]: https://github.com/open-compass/VLMEvalKit/blob/main/LICENSE
-[github-license-shield]: https://img.shields.io/github/license/open-compass/VLMEvalKit?color=white&labelColor=black&style=flat-square
-[github-stars-link]: https://github.com/open-compass/VLMEvalKit/stargazers
-[github-stars-shield]: https://img.shields.io/github/stars/open-compass/VLMEvalKit?color=ffcb47&labelColor=black&style=flat-square
+## 10. 潜在优势与边界
+
+GIRF 在理论上可能相对于 DIPE 提供以下优势：
+
+- 在保持长上下文稳定性的同时，保留视觉区域差异；
+- 显式区分多张图像及其内部位置；
+- 自然扩展到视频时间关系；
+- 不依赖 layer/head 结构，便于跨模型迁移；
+- 不需要额外训练模块。
+
+
+
+## 11. 核心总结
+
+GIRF-Core 只包含四个必要组成：
+
+1. 不同 modality pair 使用不同位置规则；
+2. 跨模态关系由模态内部规范坐标构造；
+3. 关系对文本和视觉坐标的独立平移保持不变；
+4. 在保持不变性的同时保留视觉位置和实体差异。
+
+核心公式为：
+
+$$
+\boxed{
+r_{ij}^{TV}
+=
+[\tau_i,\epsilon_{ij},z_j,y_j,x_j]
+}
+$$
+
+$$
+\boxed{
+\theta_{ij,k}^{TV}
+=\omega_k r_{ij,a(k)}^{TV}
+}
+$$
+
+$$
+\boxed{
+A_{ij}^{TV}
+=q_i^\top R_C(\theta_{ij}^{TV})k_j
+}
+$$
+
+以及：
+
+$$
+\boxed{
+r_{ij}(p^T+\Delta_T,p^V+\Delta_V)
+=r_{ij}(p^T,p^V)
+}.
+$$
+
+一句话概括：
+
+> GIRF取消文本与视觉共享坐标的假设，用规范不变且结构可区分的模态内部关系重新定义跨模态位置。
